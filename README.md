@@ -6,10 +6,13 @@ If the query is a CVE ID (e.g. `CVE-2026-41651`), it's searched as-is. Otherwise
 **Requires:** `curl`, `jq`, and `git`.<br>
 
 **Usage:**<br>
-`./get_poc.sh [-v|--version VERSION] <CVE-ID or search query>`<br>
+`./get_poc.sh [-v|--version VERSION] [-l|--limit N] <CVE-ID or search query>`<br>
 
 Pass `-v`/`--version` to only show CVEs whose affected range actually includes that version — the query is treated as a product name, looked up on [NVD](https://nvd.nist.gov/), and matched against each candidate CVE's CPE version range (`versionStartIncluding`/`versionEndExcluding`/etc.), not just a text search for the version string:<br>
 `./get_poc.sh -v 1.2.8 packagekit`<br>
+
+Pass `-l`/`--limit` to cap how many results are shown (default 30, max 100 — GitHub's per-page ceiling):<br>
+`./get_poc.sh -l 5 pwnkit`<br>
 
 GitHub's unauthenticated requests are limited to 10/minute. Set the `GITHUB_TOKEN` environment variable to raise that to 30/minute:<br>
 `GITHUB_TOKEN=ghp_xxxx ./get_poc.sh pwnkit`<br>

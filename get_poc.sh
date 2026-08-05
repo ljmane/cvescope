@@ -3,9 +3,10 @@
 set -uo pipefail
 
 usage() {
-    echo "Usage: $0 [-v|--version VERSION] <CVE-ID or search query>"
+    echo "Usage: $0 [-v|--version VERSION] [-l|--limit N] <CVE-ID or search query>"
     echo "  -v, --version VERSION   Only show CVEs whose affected range includes VERSION"
     echo "                          (looked up via NVD; query is treated as a product name)"
+    echo "  -l, --limit N           Show at most N results (default 30, max 100)"
     echo "  Set GITHUB_TOKEN env var for higher GitHub API rate limits (30 req/min vs 10)"
     echo "  Set NVD_API_KEY env var for higher NVD API rate limits (50 req/30s vs 5, used with -v)"
     exit 1
@@ -26,12 +27,18 @@ check_deps() {
 check_deps
 
 VERSION=""
+LIMIT=30
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--version)
             [[ $# -lt 2 ]] && usage
             VERSION="$2"
+            shift 2
+            ;;
+        -l|--limit)
+            [[ $# -lt 2 ]] && usage
+            LIMIT="$2"
             shift 2
             ;;
         *)
@@ -42,6 +49,9 @@ while [[ $# -gt 0 ]]; do
 done
 QUERY="${ARGS[*]}"
 [[ -z "$QUERY" ]] && usage
+
+[[ "$LIMIT" =~ ^[0-9]+$ && "$LIMIT" -gt 0 ]] || usage
+[[ "$LIMIT" -gt 100 ]] && LIMIT=100
 
 AUTH_ARGS=()
 [[ -n "${GITHUB_TOKEN:-}" ]] && AUTH_ARGS=(-H "Authorization: token $GITHUB_TOKEN")
@@ -54,7 +64,7 @@ gh_search() {
     local encoded="${1// /+}"
     curl -sf -H "Accept: application/vnd.github.v3+json" \
         "${AUTH_ARGS[@]}" \
-        "https://api.github.com/search/repositories?q=${encoded}&sort=stars&order=desc&per_page=30"
+        "https://api.github.com/search/repositories?q=${encoded}&sort=stars&order=desc&per_page=${LIMIT}"
 }
 
 is_cve_id() {
@@ -159,8 +169,8 @@ if [[ -n "$VERSION" ]]; then
         exit 0
     fi
 
-    RESULTS=$(printf '%s\n' "${RESPONSES[@]}" | jq -s '
-        {items: ([.[].items[]] | unique_by(.full_name) | sort_by(-.stargazers_count) | .[0:30])}
+    RESULTS=$(printf '%s\n' "${RESPONSES[@]}" | jq -s --argjson limit "$LIMIT" '
+        {items: ([.[].items[]] | unique_by(.full_name) | sort_by(-.stargazers_count) | .[0:$limit])}
         | .total_count = (.items | length)')
     COUNT=$(jq '.items | length' <<< "$RESULTS")
 else
