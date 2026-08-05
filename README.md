@@ -1,6 +1,8 @@
 Search GitHub for PoC code based on a CVE ID or search query. Sorts results in descending order by star count.<br>
 Shows the total number of results found, then walks through the top matches one by one — for each, the repo name, star count, last-updated date, URL, and description — asking whether to clone it. Enter `q` at any prompt to quit early.<br>
 
+If the query is a CVE ID (e.g. `CVE-2026-41651`), it's searched as-is. Otherwise `PoC` is appended to the search term. If that turns up nothing, the tool falls back to searching `<query> CVE`, pulls any CVE IDs out of the matching repos' names/descriptions, and re-searches on those CVE IDs directly — useful for vague queries (e.g. a product name) that don't literally contain the word "PoC".<br>
+
 **Requires:** `curl`, `jq`, and `git`.<br>
 
 **Usage:**<br>
