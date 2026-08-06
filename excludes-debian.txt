@@ -1,0 +1,19 @@
+# Low-value packages to skip when CVE-scanning a Debian/Ubuntu system with
+# scan_packages.sh -X. One extended regex per line; blank lines and
+# #-comments are ignored.
+#
+# Usage:
+#   dpkg-query -W -f='${Package} ${Version}\n' | awk '{v=$2; sub(/^[0-9]+:/,"",v); sub(/-[^-]*$/,"",v); print $1, v}' | ./scan_packages.sh -X excludes-debian.txt
+
+^lib
+^python[23]?-
+^locales
+^language-pack-
+^fonts-
+^perl-
+^ruby-
+^node-
+^golang-
+^manpages
+-doc$
+-dbg(sym)?$
