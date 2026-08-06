@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-p|--poc-only]"
+    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-p|--poc-only]"
     echo ""
     echo "Reads 'PACKAGE VERSION' pairs, one per line, from FILE or stdin, e.g.:"
     echo "  dpkg-query -W -f='\${Package} \${Version}\n' | sed -E 's/^([^ ]+) [0-9]+://;s/-[^ -]*\$//' | $0"
@@ -20,6 +20,8 @@ usage() {
     echo "  -f, --file FILE     Read package/version pairs from FILE instead of stdin"
     echo "  -o, --output FILE   Also write a CSV report to FILE"
     echo "  -d, --delay SECONDS Override the delay between NVD/GitHub API calls"
+    echo "  -x, --exclude REGEX Skip packages whose name matches REGEX (extended regex,"
+    echo "                      repeatable). E.g. -x '^lib' -x '^python3?-'"
     echo "  -p, --poc-only      Only report CVEs that have a public PoC"
     echo "  Set GITHUB_TOKEN / NVD_API_KEY env vars for higher rate limits and faster default pacing"
     exit 1
@@ -31,6 +33,7 @@ FILE=""
 OUTPUT=""
 DELAY=""
 POC_ONLY=0
+EXCLUDES=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -f|--file)
@@ -48,6 +51,11 @@ while [[ $# -gt 0 ]]; do
             DELAY="$2"
             shift 2
             ;;
+        -x|--exclude)
+            [[ $# -lt 2 ]] && usage
+            EXCLUDES+=("$2")
+            shift 2
+            ;;
         -p|--poc-only)
             POC_ONLY=1
             shift
@@ -63,6 +71,11 @@ done
 
 if [[ -n "$DELAY" ]]; then
     [[ "$DELAY" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage
+fi
+
+EXCLUDE_RE=""
+if [[ ${#EXCLUDES[@]} -gt 0 ]]; then
+    EXCLUDE_RE=$(IFS='|'; echo "${EXCLUDES[*]}")
 fi
 
 if [[ -n "$FILE" && ! -r "$FILE" ]]; then
@@ -101,6 +114,7 @@ fi
 echo "Scanning $TOTAL line(s) (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s)..." >&2
 
 PKG_COUNT=0
+EXCLUDED_COUNT=0
 AFFECTED_COUNT=0
 CVE_COUNT=0
 POC_COUNT=0
@@ -110,9 +124,14 @@ for line in "${LINES[@]}"; do
     i=$((i + 1))
     read -r pkg ver _ <<< "$line"
     [[ -z "$pkg" || -z "$ver" ]] && continue
-    PKG_COUNT=$((PKG_COUNT + 1))
 
     printf '\r\033[K[%d/%d] %s %s' "$i" "$TOTAL" "$pkg" "$ver" >&2
+
+    if [[ -n "$EXCLUDE_RE" && "$pkg" =~ $EXCLUDE_RE ]]; then
+        EXCLUDED_COUNT=$((EXCLUDED_COUNT + 1))
+        continue
+    fi
+    PKG_COUNT=$((PKG_COUNT + 1))
 
     DISCOVERY=$(discover_version_cves "$pkg" "$ver")
     NVD_STATUS=$?
@@ -173,7 +192,7 @@ done
 
 printf '\r\033[K' >&2
 echo ""
-echo "Summary: $PKG_COUNT package(s) scanned, $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
+echo "Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded), $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
 [[ -n "$OUTPUT" ]] && echo "CSV report written to $OUTPUT"
 
 exit 0

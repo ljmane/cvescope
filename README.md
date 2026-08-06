@@ -43,7 +43,7 @@ Continue browsing? [y/n] n
 Batch version of the `-v` lookup: feed it a list of installed packages and versions, and it reports every matching CVE per package — not just ones with a PoC — flagging which ones do have a public PoC on GitHub.
 
 **Usage:**<br>
-`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-p|--poc-only]`<br>
+`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-p|--poc-only]`<br>
 
 Reads `PACKAGE VERSION` pairs, one per line, from `FILE` or stdin:<br>
 ```
@@ -56,6 +56,9 @@ rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
 
 - `-o`/`--output FILE` also writes a CSV report (`package,version,cve,poc_found,poc_repo,poc_stars,poc_url`).
 - `-p`/`--poc-only` only reports CVEs that have a public PoC (skips the rest).
+- `-x`/`--exclude REGEX` skips packages whose name matches an extended regex — repeatable, to cut down the API load on a big install list. E.g. to skip libraries and Python packages:<br>
+  `... | ./scan_packages.sh -x '^lib' -x '^python[23]?-'` (Debian-style `lib*` prefix)<br>
+  `... | ./scan_packages.sh -x '^lib' -x '-libs$' -x '^python[23]?-'` (RedHat mixes `lib*` prefix and `-libs` suffix, e.g. `openssl-libs`)
 - `-d`/`--delay SECONDS` overrides the pause between NVD/GitHub API calls. Scanning a full package list means one NVD request per package plus one GitHub request per CVE found, so this respects both services' unauthenticated rate limits by default (and paces faster automatically once `GITHUB_TOKEN`/`NVD_API_KEY` are set) — expect a full system scan to take a while without both tokens.
 
 `get_poc.sh` and `scan_packages.sh` share their NVD/GitHub lookup logic via `poc_lib.sh` — keep all three files together.
