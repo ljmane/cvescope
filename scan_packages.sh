@@ -117,13 +117,23 @@ else
 fi
 TOTAL=${#LINES[@]}
 
+PRE_EXCLUDED=0
+if [[ -n "$EXCLUDE_RE" ]]; then
+    for line in "${LINES[@]}"; do
+        read -r pkg _ <<< "$line"
+        [[ -n "$pkg" && "$pkg" =~ $EXCLUDE_RE ]] && PRE_EXCLUDED=$((PRE_EXCLUDED + 1))
+    done
+fi
+
 if [[ -n "$OUTPUT" ]]; then
     printf '"package","version","cve","poc_found","poc_repo","poc_stars","poc_url"\n' > "$OUTPUT"
 fi
 
 SINCE_LABEL="all time"
 [[ -n "$SINCE_CUTOFF" ]] && SINCE_LABEL="last $SINCE_VALUE (published >= $SINCE_CUTOFF)"
-echo "Scanning $TOTAL line(s) (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s, since: $SINCE_LABEL)..." >&2
+SCAN_MSG="Scanning $TOTAL line(s)"
+[[ "$PRE_EXCLUDED" -gt 0 ]] && SCAN_MSG="$SCAN_MSG ($PRE_EXCLUDED excluded by -x, $((TOTAL - PRE_EXCLUDED)) to check)"
+echo "$SCAN_MSG (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s, since: $SINCE_LABEL)..." >&2
 
 PKG_COUNT=0
 EXCLUDED_COUNT=0
