@@ -2,6 +2,10 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+# shellcheck source=poc_lib.sh
+source "$SCRIPT_DIR/poc_lib.sh"
+
 usage() {
     echo "Usage: $0 [-v|--version VERSION] [-l|--limit N] <CVE-ID or search query>"
     echo "  -v, --version VERSION   Only show CVEs whose affected range includes VERSION"
@@ -10,17 +14,6 @@ usage() {
     echo "  Set GITHUB_TOKEN env var for higher GitHub API rate limits (30 req/min vs 10)"
     echo "  Set NVD_API_KEY env var for higher NVD API rate limits (50 req/30s vs 5, used with -v)"
     exit 1
-}
-
-check_deps() {
-    local missing=()
-    for cmd in curl jq git sort; do
-        command -v "$cmd" &>/dev/null || missing+=("$cmd")
-    done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "Error: missing required tools: ${missing[*]}"
-        exit 1
-    fi
 }
 
 [[ $# -eq 0 ]] && usage
@@ -53,95 +46,7 @@ QUERY="${ARGS[*]}"
 [[ "$LIMIT" =~ ^[0-9]+$ && "$LIMIT" -gt 0 ]] || usage
 [[ "$LIMIT" -gt 100 ]] && LIMIT=100
 
-AUTH_ARGS=()
-[[ -n "${GITHUB_TOKEN:-}" ]] && AUTH_ARGS=(-H "Authorization: token $GITHUB_TOKEN")
-
-NVD_AUTH_ARGS=()
-[[ -n "${NVD_API_KEY:-}" ]] && NVD_AUTH_ARGS=(-H "apiKey: $NVD_API_KEY")
-
-# Search GitHub repos for a raw (space-joined) query string.
-gh_search() {
-    local encoded="${1// /+}"
-    curl -sf -H "Accept: application/vnd.github.v3+json" \
-        "${AUTH_ARGS[@]}" \
-        "https://api.github.com/search/repositories?q=${encoded}&sort=stars&order=desc&per_page=${LIMIT}"
-}
-
-is_cve_id() {
-    [[ "$1" =~ ^[Cc][Vv][Ee]-[0-9]{4}-[0-9]{4,}$ ]]
-}
-
-nvd_lookup_by_cve() {
-    curl -sf -H "Accept: application/json" "${NVD_AUTH_ARGS[@]}" \
-        "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=$1"
-}
-
-nvd_lookup_by_keyword() {
-    local encoded="${1// /%20}"
-    curl -sf -H "Accept: application/json" "${NVD_AUTH_ARGS[@]}" \
-        "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encoded}&resultsPerPage=100"
-}
-
-# Dotted-version comparisons (a <= b, a < b, etc.) via sort -V.
-version_le() {
-    [[ "$1" == "$2" ]] && return 0
-    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
-}
-version_lt() { [[ "$1" != "$2" ]] && version_le "$1" "$2"; }
-version_gt() { version_lt "$2" "$1"; }
-version_ge() { version_le "$2" "$1"; }
-
-# Does TARGET fall within an NVD CPE match's version range (or equal its
-# exact pinned version, when no range bounds are given)?
-cpe_match_version() {
-    local target="$1" start_inc="$2" start_exc="$3" end_inc="$4" end_exc="$5" exact="$6"
-    [[ -n "$start_inc" ]] && { version_ge "$target" "$start_inc" || return 1; }
-    [[ -n "$start_exc" ]] && { version_gt "$target" "$start_exc" || return 1; }
-    [[ -n "$end_inc" ]] && { version_le "$target" "$end_inc" || return 1; }
-    [[ -n "$end_exc" ]] && { version_lt "$target" "$end_exc" || return 1; }
-    if [[ -z "$start_inc$start_exc$end_inc$end_exc" ]]; then
-        [[ -n "$exact" && "$exact" != "*" && "$exact" == "$target" ]] || return 1
-    fi
-    return 0
-}
-
-# Look up CVEs for a product (or a specific CVE ID) via NVD, and print the
-# IDs of those whose affected CPE range actually includes $version.
-discover_version_cves() {
-    local product="$1" version="$2" resp exact_cve=""
-    if is_cve_id "$product"; then
-        resp=$(nvd_lookup_by_cve "$product") || return 1
-        # Already resolved to one specific CVE — no product name to filter on.
-        exact_cve="$product"
-    else
-        resp=$(nvd_lookup_by_keyword "$product") || return 1
-    fi
-
-    local token="${product%% *}"
-    token="${token,,}"
-
-    while IFS=$'\x1f' read -r cve start_inc start_exc end_inc end_exc exact vendor prod; do
-        [[ -z "$cve" ]] && continue
-        if [[ -z "$exact_cve" ]]; then
-            local hay="${vendor,,}${prod,,}"
-            [[ "$hay" == *"$token"* ]] || continue
-        fi
-        cpe_match_version "$version" "$start_inc" "$start_exc" "$end_inc" "$end_exc" "$exact" \
-            && printf '%s\n' "$cve"
-    done < <(jq -r '
-        .vulnerabilities[]? | .cve as $c |
-        ($c.configurations // [])[] | .nodes[]? | .cpeMatch[]? | select(.vulnerable == true) |
-        [$c.id,
-         (.versionStartIncluding // ""),
-         (.versionStartExcluding // ""),
-         (.versionEndIncluding // ""),
-         (.versionEndExcluding // ""),
-         (.criteria | split(":")[5] // ""),
-         (.criteria | split(":")[3] // ""),
-         (.criteria | split(":")[4] // "")
-        ] | join("")' <<< "$resp")
-    return 0
-}
+poc_lib_init_auth
 
 if [[ -n "$VERSION" ]]; then
     echo "Looking up CVEs for '$QUERY' affecting version $VERSION via NVD..."
@@ -219,8 +124,8 @@ else
         done
 
         if [[ ${#RESPONSES[@]} -gt 0 ]]; then
-            RESULTS=$(printf '%s\n' "${RESPONSES[@]}" | jq -s '
-                {items: ([.[].items[]] | unique_by(.full_name) | sort_by(-.stargazers_count) | .[0:30])}
+            RESULTS=$(printf '%s\n' "${RESPONSES[@]}" | jq -s --argjson limit "$LIMIT" '
+                {items: ([.[].items[]] | unique_by(.full_name) | sort_by(-.stargazers_count) | .[0:$limit])}
                 | .total_count = (.items | length)')
         fi
 

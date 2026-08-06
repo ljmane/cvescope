@@ -1,3 +1,5 @@
+## get_poc.sh
+
 Search GitHub for PoC code based on a CVE ID or search query. Sorts results in descending order by star count.<br>
 Shows the total number of results found, then walks through the top matches one by one — for each, the repo name, star count, last-updated date, URL, and description — asking whether to clone it. Enter `q` at any prompt to quit early.<br>
 
@@ -35,5 +37,29 @@ Clone? [y/n/q] y
 Cloning into 'CVE-2021-4034'...
 Continue browsing? [y/n] n
 ```
+
+## scan_packages.sh
+
+Batch version of the `-v` lookup: feed it a list of installed packages and versions, and it reports every matching CVE per package — not just ones with a PoC — flagging which ones do have a public PoC on GitHub.
+
+**Usage:**<br>
+`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-p|--poc-only]`<br>
+
+Reads `PACKAGE VERSION` pairs, one per line, from `FILE` or stdin:<br>
+```
+# Debian/Ubuntu
+dpkg-query -W -f='${Package} ${Version}\n' | awk '{v=$2; sub(/^[0-9]+:/,"",v); sub(/-[^-]*$/,"",v); print $1, v}' | ./scan_packages.sh
+
+# RedHat/Fedora
+rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
+```
+
+- `-o`/`--output FILE` also writes a CSV report (`package,version,cve,poc_found,poc_repo,poc_stars,poc_url`).
+- `-p`/`--poc-only` only reports CVEs that have a public PoC (skips the rest).
+- `-d`/`--delay SECONDS` overrides the pause between NVD/GitHub API calls. Scanning a full package list means one NVD request per package plus one GitHub request per CVE found, so this respects both services' unauthenticated rate limits by default (and paces faster automatically once `GITHUB_TOKEN`/`NVD_API_KEY` are set) — expect a full system scan to take a while without both tokens.
+
+`get_poc.sh` and `scan_packages.sh` share their NVD/GitHub lookup logic via `poc_lib.sh` — keep all three files together.
+
+## poc-finder
 
 A browser-based port of this same search, no local dependencies needed, is at [pwnmi.com/tools/poc-finder](https://pwnmi.com/tools/poc-finder/).
