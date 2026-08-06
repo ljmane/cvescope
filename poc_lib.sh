@@ -43,6 +43,15 @@ nvd_lookup_by_keyword() {
         "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encoded}&resultsPerPage=100"
 }
 
+# Batch-fetch EPSS scores (FIRST.org's Exploit Prediction Scoring System —
+# probability of real-world exploitation in the next 30 days, 0-1) for a
+# comma-separated list of CVE IDs. Prints "CVE score" lines; CVEs with no
+# EPSS data yet (e.g. very new) are simply absent from the output.
+epss_lookup() {
+    curl -sf "https://api.first.org/data/v1/epss?cve=$1" \
+        | jq -r '.data[]? | "\(.cve) \(.epss)"'
+}
+
 # Convert a "<N>d" (days), "<N>y" (years), or "all"/"0" (no limit) value into
 # an ISO cutoff date (YYYY-MM-DD), or print nothing for "all"/"0". Prints
 # nothing and returns 1 on an unrecognized format.
@@ -127,4 +136,37 @@ discover_version_cves() {
          (.criteria | split(":")[4] // "")
         ] | join("")' <<< "$resp")
     return 0
+}
+
+cache_default_dir() {
+    echo "${XDG_CACHE_HOME:-$HOME/.cache}/cvescope"
+}
+
+# Build a cache filename from arbitrary key parts (package, version, and
+# whatever scan settings affect the result, e.g. since/min-epss) so a
+# changed setting naturally misses the cache instead of returning a stale
+# answer computed under different rules.
+cache_key() {
+    printf '%s' "$*" | sha1sum | awk '{print $1}'
+}
+
+# Print the cached JSON blob for $key if $dir/$key.json exists and is no
+# older than $ttl_seconds. Returns 1 (prints nothing) on a miss.
+cache_get() {
+    local dir="$1" key="$2" ttl="$3" file="$1/$2.json" ts now
+    [[ -f "$file" ]] || return 1
+    ts=$(jq -r '.timestamp // empty' "$file" 2>/dev/null) || return 1
+    [[ -n "$ts" ]] || return 1
+    now=$(date +%s)
+    [[ $((now - ts)) -le "$ttl" ]] || return 1
+    cat "$file"
+}
+
+# Store $cves_json (a jq array of result objects) under $key, stamped with
+# the current time.
+cache_set() {
+    local dir="$1" key="$2" cves_json="$3"
+    mkdir -p "$dir"
+    jq -n --argjson ts "$(date +%s)" --argjson cves "$cves_json" \
+        '{timestamp: $ts, cves: $cves}' > "$dir/$key.json"
 }
