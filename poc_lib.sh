@@ -98,13 +98,18 @@ discover_version_cves() {
 
     local token="${product%% *}"
     token="${token,,}"
+    token="${token//-/_}"
 
     while IFS=$'\x1f' read -r cve pub start_inc start_exc end_inc end_exc exact vendor prod; do
         [[ -z "$cve" ]] && continue
         [[ -n "$since" && -n "$pub" && "$pub" < "$since" ]] && continue
         if [[ -z "$exact_cve" ]]; then
-            local hay="${vendor,,}${prod,,}"
-            [[ "$hay" == *"$token"* ]] || continue
+            # Exact match on the CPE product field only — substring/vendor
+            # matching lets unrelated products through (e.g. "wget" matching
+            # a CVE whose CPE product is actually "wget2").
+            local prod_norm="${prod,,}"
+            prod_norm="${prod_norm//-/_}"
+            [[ "$prod_norm" == "$token" ]] || continue
         fi
         cpe_match_version "$version" "$start_inc" "$start_exc" "$end_inc" "$end_exc" "$exact" \
             && printf '%s\n' "$cve"

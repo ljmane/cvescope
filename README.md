@@ -57,7 +57,7 @@ dpkg-query -W -f='${Package} ${Version}\n' | awk '{v=$2; sub(/^[0-9]+:/,"",v); s
 rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
 ```
 
-- `-o`/`--output FILE` also writes a CSV report (`package,version,cve,poc_found,poc_repo,poc_stars,poc_url`).
+- `-o`/`--output FILE` also writes a CSV report (`package,version,cve,poc_found,poc_repo,poc_stars,poc_url`). `poc_found` is `yes`, `no`, or `error` (the GitHub lookup for that CVE failed — rate-limited or network error — so it's unverified, not confirmed absent).
 - `-p`/`--poc-only` only reports CVEs that have a public PoC (skips the rest).
 - `-x`/`--exclude REGEX` skips packages whose name matches an extended regex — repeatable, to cut down the API load on a big install list. E.g. to skip libraries and Python packages:<br>
   `... | ./scan_packages.sh -x '^lib' -x '^python[23]?-'` (Debian-style `lib*` prefix)<br>
@@ -66,6 +66,8 @@ rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
 - `-d`/`--delay SECONDS` overrides the pause between NVD/GitHub API calls. Scanning a full package list means one NVD request per package plus one GitHub request per CVE found, so this respects both services' unauthenticated rate limits by default (and paces faster automatically once `GITHUB_TOKEN`/`NVD_API_KEY` are set) — expect a full system scan to take a while without both tokens.
 
 `get_poc.sh` and `scan_packages.sh` share their NVD/GitHub lookup logic via `poc_lib.sh` — keep all three files together.
+
+**Caveat:** version matching compares your installed (upstream) version string against NVD's stated CPE ranges for that exact product name — it doesn't know about distro security backports. Debian/Ubuntu/RHEL frequently patch CVEs into a package without bumping its upstream version (only the distro revision suffix, which `scan_packages.sh`'s example pipelines already strip), so a flagged CVE may already be fixed in your actual installed package. Cross-check anything that matters against your distro's own security tracker ([Debian](https://security-tracker.debian.org/tracker/), [Ubuntu](https://ubuntu.com/security/cve)) before acting on it.
 
 ## poc-finder
 

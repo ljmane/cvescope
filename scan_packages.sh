@@ -135,11 +135,14 @@ SCAN_MSG="Scanning $TOTAL line(s)"
 [[ "$PRE_EXCLUDED" -gt 0 ]] && SCAN_MSG="$SCAN_MSG ($PRE_EXCLUDED excluded by -x, $((TOTAL - PRE_EXCLUDED)) to check)"
 echo "$SCAN_MSG (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s, since: $SINCE_LABEL)..." >&2
 
+START_TIME=$(date +%s)
+
 PKG_COUNT=0
 EXCLUDED_COUNT=0
 AFFECTED_COUNT=0
 CVE_COUNT=0
 POC_COUNT=0
+GH_ERROR_COUNT=0
 
 i=0
 for line in "${LINES[@]}"; do
@@ -184,7 +187,10 @@ for line in "${LINES[@]}"; do
         STARS=""
         URL=""
         TOTAL_POCS=0
-        if [[ $GH_STATUS -eq 0 ]]; then
+        if [[ $GH_STATUS -ne 0 ]]; then
+            POC_FOUND="error"
+            GH_ERROR_COUNT=$((GH_ERROR_COUNT + 1))
+        else
             TOTAL_POCS=$(jq '.total_count' <<< "$RESP")
             if [[ "$TOTAL_POCS" -gt 0 ]]; then
                 POC_FOUND="yes"
@@ -199,11 +205,11 @@ for line in "${LINES[@]}"; do
             continue
         fi
 
-        if [[ "$POC_FOUND" == "yes" ]]; then
-            echo "  $cve  PoC: YES  (${TOTAL_POCS} found, top: $REPO ★$STARS)  $URL"
-        else
-            echo "  $cve  PoC: no"
-        fi
+        case "$POC_FOUND" in
+            yes) echo "  $cve  PoC: YES  (${TOTAL_POCS} found, top: $REPO ★$STARS)  $URL" ;;
+            error) echo "  $cve  PoC: ERROR (GitHub lookup failed — rate-limited? try again or set GITHUB_TOKEN)" ;;
+            *) echo "  $cve  PoC: no" ;;
+        esac
 
         if [[ -n "$OUTPUT" ]]; then
             printf '"%s","%s","%s","%s","%s","%s","%s"\n' \
@@ -214,7 +220,19 @@ done
 
 printf '\r\033[K' >&2
 echo ""
-echo "Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded), $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
+
+ELAPSED=$(($(date +%s) - START_TIME))
+if [[ "$ELAPSED" -ge 3600 ]]; then
+    ELAPSED_STR="$((ELAPSED / 3600))h $(((ELAPSED % 3600) / 60))m $((ELAPSED % 60))s"
+elif [[ "$ELAPSED" -ge 60 ]]; then
+    ELAPSED_STR="$((ELAPSED / 60))m $((ELAPSED % 60))s"
+else
+    ELAPSED_STR="${ELAPSED}s"
+fi
+
+SUMMARY="Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded), $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
+[[ "$GH_ERROR_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $GH_ERROR_COUNT GitHub lookup(s) failed — re-run or set GITHUB_TOKEN."
+echo "$SUMMARY Took $ELAPSED_STR."
 [[ -n "$OUTPUT" ]] && echo "CSV report written to $OUTPUT"
 
 exit 0
