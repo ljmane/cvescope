@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-s|--since WHEN] [-p|--poc-only]"
+    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only]"
     echo ""
     echo "Reads 'PACKAGE VERSION' pairs, one per line, from FILE or stdin, e.g.:"
     echo "  dpkg-query -W -f='\${Package} \${Version}\n' | sed -E 's/^([^ ]+) [0-9]+://;s/-[^ -]*\$//' | $0"
@@ -17,14 +17,16 @@ usage() {
     echo "version range actually includes the given version) and reports every one —"
     echo "flagging which have a public PoC found on GitHub."
     echo ""
-    echo "  -f, --file FILE     Read package/version pairs from FILE instead of stdin"
-    echo "  -o, --output FILE   Also write a CSV report to FILE"
-    echo "  -d, --delay SECONDS Override the delay between NVD/GitHub API calls"
-    echo "  -x, --exclude REGEX Skip packages whose name matches REGEX (extended regex,"
-    echo "                      repeatable). E.g. -x '^lib' -x '^python3?-'"
-    echo "  -s, --since WHEN    Only report CVEs published in the last WHEN"
-    echo "                      (e.g. 30d, 2y; or 'all' for no limit — default 30d)"
-    echo "  -p, --poc-only      Only report CVEs that have a public PoC"
+    echo "  -f, --file FILE       Read package/version pairs from FILE instead of stdin"
+    echo "  -o, --output FILE     Also write a CSV report to FILE"
+    echo "  -d, --delay SECONDS   Override the delay between NVD/GitHub API calls"
+    echo "  -x, --exclude REGEX   Skip packages whose name matches REGEX (extended regex,"
+    echo "                        repeatable). E.g. -x '^lib' -x '^python3?-'"
+    echo "  -X, --exclude-file FILE  Same as -x, one regex per line. Blank lines and lines"
+    echo "                        starting with # are ignored. Combines with any -x given."
+    echo "  -s, --since WHEN      Only report CVEs published in the last WHEN"
+    echo "                        (e.g. 30d, 2y; or 'all' for no limit — default 30d)"
+    echo "  -p, --poc-only        Only report CVEs that have a public PoC"
     echo "  Set GITHUB_TOKEN / NVD_API_KEY env vars for higher rate limits and faster default pacing"
     exit 1
 }
@@ -36,6 +38,7 @@ OUTPUT=""
 DELAY=""
 POC_ONLY=0
 EXCLUDES=()
+EXCLUDE_FILE=""
 SINCE_VALUE="30d"
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +62,11 @@ while [[ $# -gt 0 ]]; do
             EXCLUDES+=("$2")
             shift 2
             ;;
+        -X|--exclude-file)
+            [[ $# -lt 2 ]] && usage
+            EXCLUDE_FILE="$2"
+            shift 2
+            ;;
         -s|--since)
             [[ $# -lt 2 ]] && usage
             SINCE_VALUE="$2"
@@ -79,6 +87,19 @@ done
 
 if [[ -n "$DELAY" ]]; then
     [[ "$DELAY" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage
+fi
+
+if [[ -n "$EXCLUDE_FILE" ]]; then
+    if [[ ! -r "$EXCLUDE_FILE" ]]; then
+        echo "Error: cannot read exclude file: $EXCLUDE_FILE" >&2
+        exit 1
+    fi
+    while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+        pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+        pattern="${pattern%"${pattern##*[![:space:]]}"}"
+        [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+        EXCLUDES+=("$pattern")
+    done < "$EXCLUDE_FILE"
 fi
 
 EXCLUDE_RE=""

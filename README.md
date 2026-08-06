@@ -46,7 +46,7 @@ Continue browsing? [y/n] n
 Batch version of the `-v` lookup: feed it a list of installed packages and versions, and it reports every matching CVE per package — not just ones with a PoC — flagging which ones do have a public PoC on GitHub.
 
 **Usage:**<br>
-`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-s|--since WHEN] [-p|--poc-only]`<br>
+`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only]`<br>
 
 Reads `PACKAGE VERSION` pairs, one per line, from `FILE` or stdin:<br>
 ```
@@ -62,6 +62,16 @@ rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
 - `-x`/`--exclude REGEX` skips packages whose name matches an extended regex — repeatable, to cut down the API load on a big install list. E.g. to skip libraries and Python packages:<br>
   `... | ./scan_packages.sh -x '^lib' -x '^python[23]?-'` (Debian-style `lib*` prefix)<br>
   `... | ./scan_packages.sh -x '^lib' -x '-libs$' -x '^python[23]?-'` (RedHat mixes `lib*` prefix and `-libs` suffix, e.g. `openssl-libs`)
+- `-X`/`--exclude-file FILE` is the same thing but reads patterns from a file, one regex per line — blank lines and lines starting with `#` are ignored, and it combines with any `-x` also given:<br>
+  ```
+  # excludes.txt
+  ^lib
+  ^python[23]?-
+  -doc$
+  -dbg(sym)?$
+  ^perl-
+  ```
+  `... | ./scan_packages.sh -X excludes.txt`
 - `-s`/`--since WHEN` only reports CVEs published within a given window — `30d`, `2y`, or `all` for no limit (**default: `30d`**). Also cuts down noise/load, since most installed packages' CVEs (if any) are old news.
 - `-d`/`--delay SECONDS` overrides the pause between NVD/GitHub API calls. Scanning a full package list means one NVD request per package plus one GitHub request per CVE found, so this respects both services' unauthenticated rate limits by default (and paces faster automatically once `GITHUB_TOKEN`/`NVD_API_KEY` are set) — expect a full system scan to take a while without both tokens.
 
