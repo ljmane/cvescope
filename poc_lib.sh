@@ -43,6 +43,21 @@ nvd_lookup_by_keyword() {
         "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${encoded}&resultsPerPage=100"
 }
 
+# Convert a "<N>d" (days), "<N>y" (years), or "all"/"0" (no limit) value into
+# an ISO cutoff date (YYYY-MM-DD), or print nothing for "all"/"0". Prints
+# nothing and returns 1 on an unrecognized format.
+since_to_cutoff() {
+    local val="$1"
+    [[ "$val" == "all" || "$val" == "0" ]] && return 0
+    [[ "$val" =~ ^([0-9]+)([dy])$ ]] || return 1
+    local n="${BASH_REMATCH[1]}" unit="${BASH_REMATCH[2]}"
+    if [[ "$unit" == "d" ]]; then
+        date -d "-${n} days" +%Y-%m-%d
+    else
+        date -d "-${n} years" +%Y-%m-%d
+    fi
+}
+
 # Dotted-version comparisons (a <= b, a < b, etc.) via sort -V.
 version_le() {
     [[ "$1" == "$2" ]] && return 0
@@ -67,10 +82,12 @@ cpe_match_version() {
 }
 
 # Look up CVEs for a product (or a specific CVE ID) via NVD, and print the
-# IDs of those whose affected CPE range actually includes $version. Prints
-# every match found (caller decides whether to cap the count).
+# IDs of those whose affected CPE range actually includes $version. If
+# $since (an ISO cutoff date, YYYY-MM-DD) is given, CVEs published before it
+# are skipped. Prints every remaining match found (caller decides whether to
+# cap the count).
 discover_version_cves() {
-    local product="$1" version="$2" resp exact_cve=""
+    local product="$1" version="$2" since="${3:-}" resp exact_cve=""
     if is_cve_id "$product"; then
         resp=$(nvd_lookup_by_cve "$product") || return 1
         # Already resolved to one specific CVE — no product name to filter on.
@@ -82,8 +99,9 @@ discover_version_cves() {
     local token="${product%% *}"
     token="${token,,}"
 
-    while IFS=$'\x1f' read -r cve start_inc start_exc end_inc end_exc exact vendor prod; do
+    while IFS=$'\x1f' read -r cve pub start_inc start_exc end_inc end_exc exact vendor prod; do
         [[ -z "$cve" ]] && continue
+        [[ -n "$since" && -n "$pub" && "$pub" < "$since" ]] && continue
         if [[ -z "$exact_cve" ]]; then
             local hay="${vendor,,}${prod,,}"
             [[ "$hay" == *"$token"* ]] || continue
@@ -94,6 +112,7 @@ discover_version_cves() {
         .vulnerabilities[]? | .cve as $c |
         ($c.configurations // [])[] | .nodes[]? | .cpeMatch[]? | select(.vulnerable == true) |
         [$c.id,
+         ($c.published // ""),
          (.versionStartIncluding // ""),
          (.versionStartExcluding // ""),
          (.versionEndIncluding // ""),

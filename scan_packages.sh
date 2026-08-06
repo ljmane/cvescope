@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-p|--poc-only]"
+    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-s|--since WHEN] [-p|--poc-only]"
     echo ""
     echo "Reads 'PACKAGE VERSION' pairs, one per line, from FILE or stdin, e.g.:"
     echo "  dpkg-query -W -f='\${Package} \${Version}\n' | sed -E 's/^([^ ]+) [0-9]+://;s/-[^ -]*\$//' | $0"
@@ -22,6 +22,8 @@ usage() {
     echo "  -d, --delay SECONDS Override the delay between NVD/GitHub API calls"
     echo "  -x, --exclude REGEX Skip packages whose name matches REGEX (extended regex,"
     echo "                      repeatable). E.g. -x '^lib' -x '^python3?-'"
+    echo "  -s, --since WHEN    Only report CVEs published in the last WHEN"
+    echo "                      (e.g. 30d, 2y; or 'all' for no limit — default 30d)"
     echo "  -p, --poc-only      Only report CVEs that have a public PoC"
     echo "  Set GITHUB_TOKEN / NVD_API_KEY env vars for higher rate limits and faster default pacing"
     exit 1
@@ -34,6 +36,7 @@ OUTPUT=""
 DELAY=""
 POC_ONLY=0
 EXCLUDES=()
+SINCE_VALUE="30d"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -f|--file)
@@ -54,6 +57,11 @@ while [[ $# -gt 0 ]]; do
         -x|--exclude)
             [[ $# -lt 2 ]] && usage
             EXCLUDES+=("$2")
+            shift 2
+            ;;
+        -s|--since)
+            [[ $# -lt 2 ]] && usage
+            SINCE_VALUE="$2"
             shift 2
             ;;
         -p|--poc-only)
@@ -85,6 +93,8 @@ fi
 
 poc_lib_init_auth
 
+SINCE_CUTOFF=$(since_to_cutoff "$SINCE_VALUE") || usage
+
 # Only need the single top PoC hit per CVE.
 LIMIT=1
 
@@ -111,7 +121,9 @@ if [[ -n "$OUTPUT" ]]; then
     printf '"package","version","cve","poc_found","poc_repo","poc_stars","poc_url"\n' > "$OUTPUT"
 fi
 
-echo "Scanning $TOTAL line(s) (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s)..." >&2
+SINCE_LABEL="all time"
+[[ -n "$SINCE_CUTOFF" ]] && SINCE_LABEL="last $SINCE_VALUE (published >= $SINCE_CUTOFF)"
+echo "Scanning $TOTAL line(s) (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s, since: $SINCE_LABEL)..." >&2
 
 PKG_COUNT=0
 EXCLUDED_COUNT=0
@@ -133,7 +145,7 @@ for line in "${LINES[@]}"; do
     fi
     PKG_COUNT=$((PKG_COUNT + 1))
 
-    DISCOVERY=$(discover_version_cves "$pkg" "$ver")
+    DISCOVERY=$(discover_version_cves "$pkg" "$ver" "$SINCE_CUTOFF")
     NVD_STATUS=$?
     sleep "$NVD_DELAY"
 

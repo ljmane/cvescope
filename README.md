@@ -8,10 +8,13 @@ If the query is a CVE ID (e.g. `CVE-2026-41651`), it's searched as-is. Otherwise
 **Requires:** `curl`, `jq`, and `git`.<br>
 
 **Usage:**<br>
-`./get_poc.sh [-v|--version VERSION] [-l|--limit N] <CVE-ID or search query>`<br>
+`./get_poc.sh [-v|--version VERSION] [-s|--since WHEN] [-l|--limit N] <CVE-ID or search query>`<br>
 
 Pass `-v`/`--version` to only show CVEs whose affected range actually includes that version — the query is treated as a product name, looked up on [NVD](https://nvd.nist.gov/), and matched against each candidate CVE's CPE version range (`versionStartIncluding`/`versionEndExcluding`/etc.), not just a text search for the version string:<br>
 `./get_poc.sh -v 1.2.8 packagekit`<br>
+
+With `-v`, pass `-s`/`--since` to only consider CVEs published within a given window — `30d`, `2y`, or `all` for no limit (**default: `30d`**):<br>
+`./get_poc.sh -v 1.2.8 -s 2y packagekit`<br>
 
 Pass `-l`/`--limit` to cap how many results are shown (default 30, max 100 — GitHub's per-page ceiling):<br>
 `./get_poc.sh -l 5 pwnkit`<br>
@@ -43,7 +46,7 @@ Continue browsing? [y/n] n
 Batch version of the `-v` lookup: feed it a list of installed packages and versions, and it reports every matching CVE per package — not just ones with a PoC — flagging which ones do have a public PoC on GitHub.
 
 **Usage:**<br>
-`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-p|--poc-only]`<br>
+`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-s|--since WHEN] [-p|--poc-only]`<br>
 
 Reads `PACKAGE VERSION` pairs, one per line, from `FILE` or stdin:<br>
 ```
@@ -59,6 +62,7 @@ rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
 - `-x`/`--exclude REGEX` skips packages whose name matches an extended regex — repeatable, to cut down the API load on a big install list. E.g. to skip libraries and Python packages:<br>
   `... | ./scan_packages.sh -x '^lib' -x '^python[23]?-'` (Debian-style `lib*` prefix)<br>
   `... | ./scan_packages.sh -x '^lib' -x '-libs$' -x '^python[23]?-'` (RedHat mixes `lib*` prefix and `-libs` suffix, e.g. `openssl-libs`)
+- `-s`/`--since WHEN` only reports CVEs published within a given window — `30d`, `2y`, or `all` for no limit (**default: `30d`**). Also cuts down noise/load, since most installed packages' CVEs (if any) are old news.
 - `-d`/`--delay SECONDS` overrides the pause between NVD/GitHub API calls. Scanning a full package list means one NVD request per package plus one GitHub request per CVE found, so this respects both services' unauthenticated rate limits by default (and paces faster automatically once `GITHUB_TOKEN`/`NVD_API_KEY` are set) — expect a full system scan to take a while without both tokens.
 
 `get_poc.sh` and `scan_packages.sh` share their NVD/GitHub lookup logic via `poc_lib.sh` — keep all three files together.

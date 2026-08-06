@@ -7,9 +7,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-v|--version VERSION] [-l|--limit N] <CVE-ID or search query>"
+    echo "Usage: $0 [-v|--version VERSION] [-s|--since WHEN] [-l|--limit N] <CVE-ID or search query>"
     echo "  -v, --version VERSION   Only show CVEs whose affected range includes VERSION"
     echo "                          (looked up via NVD; query is treated as a product name)"
+    echo "  -s, --since WHEN        With -v: only CVEs published in the last WHEN"
+    echo "                          (e.g. 30d, 2y; or 'all' for no limit — default 30d)"
     echo "  -l, --limit N           Show at most N results (default 30, max 100)"
     echo "  Set GITHUB_TOKEN env var for higher GitHub API rate limits (30 req/min vs 10)"
     echo "  Set NVD_API_KEY env var for higher NVD API rate limits (50 req/30s vs 5, used with -v)"
@@ -20,6 +22,7 @@ usage() {
 check_deps
 
 VERSION=""
+SINCE_VALUE="30d"
 LIMIT=30
 ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -27,6 +30,11 @@ while [[ $# -gt 0 ]]; do
         -v|--version)
             [[ $# -lt 2 ]] && usage
             VERSION="$2"
+            shift 2
+            ;;
+        -s|--since)
+            [[ $# -lt 2 ]] && usage
+            SINCE_VALUE="$2"
             shift 2
             ;;
         -l|--limit)
@@ -48,9 +56,15 @@ QUERY="${ARGS[*]}"
 
 poc_lib_init_auth
 
+SINCE_CUTOFF=$(since_to_cutoff "$SINCE_VALUE") || usage
+
 if [[ -n "$VERSION" ]]; then
-    echo "Looking up CVEs for '$QUERY' affecting version $VERSION via NVD..."
-    DISCOVERY=$(discover_version_cves "$QUERY" "$VERSION") || {
+    if [[ -n "$SINCE_CUTOFF" ]]; then
+        echo "Looking up CVEs for '$QUERY' affecting version $VERSION, published in the last $SINCE_VALUE, via NVD..."
+    else
+        echo "Looking up CVEs for '$QUERY' affecting version $VERSION via NVD..."
+    fi
+    DISCOVERY=$(discover_version_cves "$QUERY" "$VERSION" "$SINCE_CUTOFF") || {
         echo "Error: NVD API request failed. Check your connection or NVD_API_KEY."
         exit 1
     }
@@ -58,7 +72,7 @@ if [[ -n "$VERSION" ]]; then
     mapfile -t CVE_IDS < <(printf '%s\n' "$DISCOVERY" | awk 'NF && !seen[$0]++' | head -n 5)
 
     if [[ ${#CVE_IDS[@]} -eq 0 ]]; then
-        echo "No CVEs found for '$QUERY' affecting version $VERSION"
+        echo "No CVEs found for '$QUERY' affecting version $VERSION${SINCE_CUTOFF:+ published in the last $SINCE_VALUE}"
         exit 0
     fi
 
