@@ -1,0 +1,36 @@
+# Low-value packages to skip when CVE-scanning a RedHat/Fedora/RHEL system
+# with scan_packages.sh -X. One extended regex per line; blank lines and
+# #-comments are ignored.
+#
+# Usage:
+#   rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh -X excludes-redhat.txt
+
+# Shared libraries — little independent attack surface, and RPM mixes both
+# naming conventions (lib* prefix and -libs suffix, e.g. openssl-libs)
+^lib
+-libs$
+
+# Development headers/tools — compile-time only, not independently
+# exploitable at runtime
+-devel$
+
+# Documentation
+-doc$
+
+# Debug symbols — never independently vulnerable, just symbol tables
+-debuginfo$
+-debugsource$
+
+# Locale/translation data
+-langpack-
+^glibc-langpack-
+
+# Fonts
+-fonts$
+
+# Language-ecosystem wrapper packages — the CVE that matters lives in the
+# underlying library/gem/module, not the distro's repackaging of it
+^perl-
+^rubygem-
+^golang-
+^python[23]?-
