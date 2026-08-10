@@ -142,7 +142,7 @@ cache_default_dir() {
     echo "${XDG_CACHE_HOME:-$HOME/.cache}/cvescope"
 }
 
-# Build a cache filename from arbitrary key parts (package, version, and
+# Build a lookup key from arbitrary key parts (package, version, and
 # whatever scan settings affect the result, e.g. since/min-epss) so a
 # changed setting naturally misses the cache instead of returning a stale
 # answer computed under different rules.
@@ -150,25 +150,47 @@ cache_key() {
     printf '%s' "$*" | sha1sum | awk '{print $1}'
 }
 
-# Print the cached JSON blob for $key if $dir/$key.json exists and is no
+# Single SQLite file (not one file per key — a system scan means hundreds
+# of entries, and a directory of hundreds of tiny files is its own kind of
+# clutter). Created on first write.
+cache_db() {
+    echo "$1/cache.db"
+}
+
+# SQL string-literal escaping. Cache keys are fixed-format sha1 hex (no
+# quotes possible); JSON values here never contain a literal single quote
+# either (repo full_name/CVE ID/enum fields/URLs — none of those charsets
+# allow one), but escape defensively anyway since it's nearly free.
+_sql_escape() {
+    printf '%s' "${1//\'/\'\'}"
+}
+
+# Print the cached JSON blob for $key if present in $dir/cache.db and no
 # older than $ttl_seconds. Returns 1 (prints nothing) on a miss.
 cache_get() {
-    local dir="$1" key="$2" ttl="$3" file="$1/$2.json" ts now
-    [[ -f "$file" ]] || return 1
-    ts=$(jq -r '.timestamp // empty' "$file" 2>/dev/null) || return 1
-    [[ -n "$ts" ]] || return 1
-    now=$(date +%s)
-    [[ $((now - ts)) -le "$ttl" ]] || return 1
-    cat "$file"
+    local dir="$1" key="$2" ttl="$3" db cutoff result
+    db=$(cache_db "$dir")
+    [[ -f "$db" ]] || return 1
+    cutoff=$(( $(date +%s) - ttl ))
+    result=$(sqlite3 "$db" \
+        "SELECT value FROM cache WHERE key = '$(_sql_escape "$key")' AND ts >= $cutoff;" 2>/dev/null)
+    [[ -n "$result" ]] || return 1
+    printf '%s' "$result"
 }
 
 # Store $cves_json (a jq array of result objects) under $key, stamped with
 # the current time.
 cache_set() {
-    local dir="$1" key="$2" cves_json="$3"
+    local dir="$1" key="$2" cves_json="$3" db ts wrapped
     mkdir -p "$dir"
-    jq -n --argjson ts "$(date +%s)" --argjson cves "$cves_json" \
-        '{timestamp: $ts, cves: $cves}' > "$dir/$key.json"
+    db=$(cache_db "$dir")
+    sqlite3 "$db" \
+        "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, ts INTEGER NOT NULL, value TEXT NOT NULL);" \
+        2>/dev/null
+    ts=$(date +%s)
+    wrapped=$(jq -nc --argjson ts "$ts" --argjson cves "$cves_json" '{timestamp: $ts, cves: $cves}')
+    sqlite3 "$db" "INSERT INTO cache (key, ts, value) VALUES ('$(_sql_escape "$key")', $ts, '$(_sql_escape "$wrapped")')
+        ON CONFLICT(key) DO UPDATE SET ts = excluded.ts, value = excluded.value;"
 }
 
 # Like gh_search, but for a specific CVE ID: GitHub's search treats the

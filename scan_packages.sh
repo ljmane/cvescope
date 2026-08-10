@@ -124,6 +124,11 @@ fi
 [[ "$CACHE_TTL_HOURS" =~ ^[0-9]+$ ]] || usage
 CACHE_TTL_SECONDS=$((CACHE_TTL_HOURS * 3600))
 
+if [[ "$NO_CACHE" -eq 0 ]] && ! command -v sqlite3 &>/dev/null; then
+    echo "Error: sqlite3 is required for the results cache. Install it, or pass --no-cache to skip caching." >&2
+    exit 1
+fi
+
 if [[ -n "$EXCLUDE_FILE" ]]; then
     if [[ ! -r "$EXCLUDE_FILE" ]]; then
         echo "Error: cannot read exclude file: $EXCLUDE_FILE" >&2
