@@ -170,3 +170,20 @@ cache_set() {
     jq -n --argjson ts "$(date +%s)" --argjson cves "$cves_json" \
         '{timestamp: $ts, cves: $cves}' > "$dir/$key.json"
 }
+
+# Like gh_search, but for a specific CVE ID: GitHub's search treats the
+# query as a loose token match, so searching "CVE-2021-3448" also returns
+# repos named e.g. "CVE-2021-34486" (same digit prefix, different CVE
+# entirely). Filters results down to ones whose name/description actually
+# contain the exact CVE ID (not immediately followed by another digit).
+gh_search_cve() {
+    local cve="$1" resp
+    resp=$(gh_search "$cve") || return 1
+    jq --arg cve "$cve" '
+        .items = [.items[] | select(
+            ((.full_name // "") | test("(?i)" + $cve + "($|[^0-9])")) or
+            ((.description // "") | test("(?i)" + $cve + "($|[^0-9])"))
+        )]
+        | .total_count = (.items | length)
+    ' <<< "$resp"
+}

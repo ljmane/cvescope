@@ -80,7 +80,7 @@ if [[ -n "$VERSION" ]]; then
 
     RESPONSES=()
     for cve in "${CVE_IDS[@]}"; do
-        RESP=$(gh_search "$cve") && RESPONSES+=("$RESP")
+        RESP=$(gh_search_cve "$cve") && RESPONSES+=("$RESP")
     done
 
     if [[ ${#RESPONSES[@]} -eq 0 ]]; then
@@ -104,10 +104,17 @@ else
 
     echo "Searching GitHub for: $SEARCH_TERM"
 
-    RESULTS=$(gh_search "$SEARCH_TERM") || {
-        echo "Error: GitHub API request failed. Check your connection or GITHUB_TOKEN."
-        exit 1
-    }
+    if is_cve_id "$QUERY"; then
+        RESULTS=$(gh_search_cve "$SEARCH_TERM") || {
+            echo "Error: GitHub API request failed. Check your connection or GITHUB_TOKEN."
+            exit 1
+        }
+    else
+        RESULTS=$(gh_search "$SEARCH_TERM") || {
+            echo "Error: GitHub API request failed. Check your connection or GITHUB_TOKEN."
+            exit 1
+        }
+    fi
 
     COUNT=$(jq '.items | length' <<< "$RESULTS")
 
@@ -134,7 +141,7 @@ else
 
         RESPONSES=()
         for cve in "${CVE_IDS[@]}"; do
-            RESP=$(gh_search "$cve") && RESPONSES+=("$RESP")
+            RESP=$(gh_search_cve "$cve") && RESPONSES+=("$RESP")
         done
 
         if [[ ${#RESPONSES[@]} -gt 0 ]]; then

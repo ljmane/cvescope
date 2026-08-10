@@ -325,7 +325,7 @@ for line in "${LINES[@]}"; do
             STARS=""
             URL=""
         else
-            RESP=$(gh_search "$cve")
+            RESP=$(gh_search_cve "$cve")
             GH_STATUS=$?
             sleep "$GH_DELAY"
 
