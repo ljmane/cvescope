@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--no-cache] [--cache-ttl HOURS]"
+    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--no-cache] [--cache-ttl HOURS] [--stale-out FILE]"
     echo ""
     echo "Reads 'PACKAGE VERSION' pairs, one per line, from FILE or stdin, e.g.:"
     echo "  dpkg-query -W -f='\${Package} \${Version}\n' | sed -E 's/^([^ ]+) [0-9]+://;s/-[^ -]*\$//' | $0"
@@ -37,6 +37,12 @@ usage() {
     echo "                        — avoid this flag if that's what you're hunting for."
     echo "  --no-cache            Don't read or write the local results cache"
     echo "  --cache-ttl HOURS     How long a cached package result stays fresh (default 24)"
+    echo "  --stale-out FILE      Write 'PACKAGE VERSION' lines for packages that have a real"
+    echo "                        CVE match outside your -s window to FILE — same format this"
+    echo "                        script reads, so you can re-check just those with a wider"
+    echo "                        window instead of re-running -s all against everything:"
+    echo "                        $0 -f packages --stale-out stale.txt"
+    echo "                        $0 -f stale.txt -s all"
     echo "  Set GITHUB_TOKEN / NVD_API_KEY env vars for higher rate limits and faster default pacing"
     echo "  Set CVESCOPE_CACHE_DIR to override the cache location (default ~/.cache/cvescope)"
     exit 1
@@ -54,6 +60,7 @@ SINCE_VALUE="30d"
 MIN_EPSS=""
 NO_CACHE=0
 CACHE_TTL_HOURS=24
+STALE_OUT=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -f|--file)
@@ -102,6 +109,11 @@ while [[ $# -gt 0 ]]; do
         --cache-ttl)
             [[ $# -lt 2 ]] && usage
             CACHE_TTL_HOURS="$2"
+            shift 2
+            ;;
+        --stale-out)
+            [[ $# -lt 2 ]] && usage
+            STALE_OUT="$2"
             shift 2
             ;;
         -h|--help)
@@ -225,6 +237,7 @@ GH_ERROR_COUNT=0
 EPSS_SKIP_COUNT=0
 CACHE_HIT_COUNT=0
 STALE_PKG_COUNT=0
+STALE_PKGS=()
 STALE_FILE=$(mktemp)
 trap 'rm -f "$STALE_FILE"' EXIT
 
@@ -307,7 +320,10 @@ for line in "${LINES[@]}"; do
     mapfile -t CVES < <(printf '%s\n' "$DISCOVERY" | awk 'NF && !seen[$0]++')
 
     if [[ ${#CVES[@]} -eq 0 ]]; then
-        [[ -s "$STALE_FILE" ]] && STALE_PKG_COUNT=$((STALE_PKG_COUNT + 1))
+        if [[ -s "$STALE_FILE" ]]; then
+            STALE_PKG_COUNT=$((STALE_PKG_COUNT + 1))
+            STALE_PKGS+=("$pkg $ver")
+        fi
         [[ "$NO_CACHE" -eq 0 ]] && cache_set "$CACHE_DIR" "$CACHE_KEY" "[]"
         continue
     fi
@@ -388,5 +404,15 @@ SUMMARY="Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded, $CACH
 [[ "$STALE_PKG_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $STALE_PKG_COUNT package(s) have a known CVE outside your -s $SINCE_VALUE window — widen it (e.g. -s all) to see them."
 echo "$SUMMARY Took $ELAPSED_STR."
 [[ -n "$OUTPUT" ]] && echo "CSV report written to $OUTPUT"
+
+if [[ "$STALE_PKG_COUNT" -gt 0 ]]; then
+    echo ""
+    echo "Packages with a known CVE outside your -s $SINCE_VALUE window:"
+    printf '  %s\n' "${STALE_PKGS[@]}"
+    if [[ -n "$STALE_OUT" ]]; then
+        printf '%s\n' "${STALE_PKGS[@]}" > "$STALE_OUT"
+        echo "Written to $STALE_OUT — re-check just these with: $0 -f $STALE_OUT -s all"
+    fi
+fi
 
 exit 0

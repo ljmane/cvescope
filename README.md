@@ -50,7 +50,7 @@ Batch version of the `-v` lookup: feed it a list of installed packages and versi
 **Requires:** `curl`, `jq`, and `sqlite3` (only for the results cache — omit it and pass `--no-cache` if unavailable).<br>
 
 **Usage:**<br>
-`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--no-cache] [--cache-ttl HOURS]`<br>
+`./scan_packages.sh [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--no-cache] [--cache-ttl HOURS] [--stale-out FILE]`<br>
 
 Reads `PACKAGE VERSION` pairs, one per line, from `FILE` or stdin:<br>
 ```
@@ -68,7 +68,12 @@ rpm -qa --qf '%{NAME} %{VERSION}\n' | ./scan_packages.sh
   `... | ./scan_packages.sh -x '^lib' -x '-libs$' -x '^python[23]?-'` (RedHat mixes `lib*` prefix and `-libs` suffix, e.g. `openssl-libs`)
 - `-X`/`--exclude-file FILE` is the same thing but reads patterns from a file, one regex per line — blank lines and lines starting with `#` are ignored, and it combines with any `-x` also given. Ready-to-use lists: [excludes-debian.txt](excludes-debian.txt), [excludes-redhat.txt](excludes-redhat.txt).<br>
   `... | ./scan_packages.sh -X excludes-debian.txt`
-- `-s`/`--since WHEN` only reports CVEs published within a given window — `30d`, `2y`, or `all` for no limit (**default: `30d`**). Also cuts down noise/load, since most installed packages' CVEs (if any) are old news. The default is a poor fit for old/legacy packages, though — if any package has a real, version-matching CVE that's just outside the window, the final summary says so (`N package(s) have a known CVE outside your -s 30d window — widen it`) so you know to widen it, rather than the run just going quiet. (This check only runs on a live NVD lookup, not a cache hit, so a fully cached re-run won't re-surface it.)
+- `-s`/`--since WHEN` only reports CVEs published within a given window — `30d`, `2y`, or `all` for no limit (**default: `30d`**). Also cuts down noise/load, since most installed packages' CVEs (if any) are old news. The default is a poor fit for old/legacy packages, though — if any package has a real, version-matching CVE that's just outside the window, the final summary says so (`N package(s) have a known CVE outside your -s 30d window — widen it`), followed by the actual `package version` list. (This check only runs on a live NVD lookup, not a cache hit, so a fully cached re-run won't re-surface it.)
+- `--stale-out FILE` writes that same `package version` list to `FILE`, in exactly the format this script reads as input — so instead of re-running `-s all` against your whole package list (slow), you can re-check just the ones that actually need it:<br>
+  ```
+  ./scan_packages.sh -f packages --stale-out stale.txt
+  ./scan_packages.sh -f stale.txt -s all
+  ```
 - `--min-epss N` (e.g. `0.1`) skips the GitHub PoC lookup for any CVE whose [EPSS score](https://www.first.org/epss/) (FIRST.org's predicted probability of real-world exploitation in the next 30 days, 0–1) is below `N` — the CVE is still reported, just marked `PoC: SKIPPED` instead of actually checking GitHub for it. CVEs with no EPSS data yet (very new) are always checked, not skipped. **Off by default.**<br>
   ⚠️ EPSS is trained mostly on internet-facing, remotely-exploitable vulnerabilities — local-privilege-escalation bugs (like the PackageKit example used throughout this README) score low almost by nature, regardless of whether a real, working PoC exists. Don't treat a low EPSS score as "no exploit exists"; it's a load-reduction filter, not a severity verdict. `-s`/`--since` is a much safer way to cut volume without hiding anything you'd actually want to know about.
 - `--no-cache` / `--cache-ttl HOURS` control the local results cache (on by default, 24h freshness). Each `package+version+since+min-epss` combination is cached — including packages with zero matching CVEs, since that's the common case — in a single SQLite database at `~/.cache/cvescope/cache.db` (override the directory with `CVESCOPE_CACHE_DIR`; requires `sqlite3`, skip that dependency entirely with `--no-cache`). A repeat scan of an unchanged package list within the TTL window does no NVD/GitHub calls at all for anything already cached. Pass `--no-cache` to force a fully live check, or lower `--cache-ttl` if you want fresher data sooner.
