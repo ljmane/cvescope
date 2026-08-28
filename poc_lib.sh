@@ -90,11 +90,30 @@ cpe_match_version() {
     return 0
 }
 
+# Loose classifier for "is this CVE a local privilege-escalation issue":
+# requires a local-only CVSS attack vector (AV:L/AV:P) AND the description
+# using actual escalation language, not just "local" (a local DoS or info
+# leak is AV:L too, but isn't privesc). Favors recall over precision by
+# design — matches this project's existing bias toward not hiding things.
+is_privesc_match() {
+    local desc="$1" vector="$2"
+    [[ "$vector" == *"AV:L"* || "$vector" == *"AV:P"* ]] || return 1
+    [[ "$desc" =~ [Pp]rivilege[[:space:]]escalation ]] && return 0
+    [[ "$desc" =~ [Ee]scalat(e|ion)[^.]{0,30}privileges? ]] && return 0
+    [[ "$desc" =~ [Ee]levat(e|ion)[^.]{0,30}privileges? ]] && return 0
+    [[ "$desc" =~ [Gg]ain[^.]{0,30}(privileges?|root|admin|elevated|superuser|system) ]] && return 0
+    [[ "$desc" =~ (run|running|execute|executing)[[:space:]]as[[:space:]](root|administrator|system) ]] && return 0
+    [[ "$desc" == *"administrative rights"* ]] && return 0
+    [[ "$desc" == *"SUID"* || "$desc" == *"setuid"* ]] && return 0
+    return 1
+}
+
 # Look up CVEs for a product (or a specific CVE ID) via NVD, and print the
-# IDs of those whose affected CPE range actually includes $version. If
-# $since (an ISO cutoff date, YYYY-MM-DD) is given, CVEs published before it
-# are skipped. Prints every remaining match found (caller decides whether to
-# cap the count).
+# IDs of those whose affected CPE range actually includes $version, one per
+# line as "CVE-ID<US>yes|no" (yes/no = is_privesc_match). If $since (an ISO
+# cutoff date, YYYY-MM-DD) is given, CVEs published before it are skipped.
+# Prints every remaining match found (caller decides whether to cap the
+# count).
 #
 # If $stale_out_file is given and at least one CVE matches the product and
 # version but is excluded purely by $since, the most recent such CVE's
@@ -116,7 +135,7 @@ discover_version_cves() {
     token="${token//-/_}"
     local newest_stale=""
 
-    while IFS=$'\x1f' read -r cve pub start_inc start_exc end_inc end_exc exact vendor prod; do
+    while IFS=$'\x1f' read -r cve pub start_inc start_exc end_inc end_exc exact vendor prod desc vector; do
         [[ -z "$cve" ]] && continue
         if [[ -z "$exact_cve" ]]; then
             # Exact match on the CPE product field only — substring/vendor
@@ -131,7 +150,9 @@ discover_version_cves() {
             [[ -z "$newest_stale" || "$pub" > "$newest_stale" ]] && newest_stale="$pub"
             continue
         fi
-        printf '%s\n' "$cve"
+        local privesc="no"
+        is_privesc_match "$desc" "$vector" && privesc="yes"
+        printf '%s\x1f%s\n' "$cve" "$privesc"
     done < <(jq -r '
         .vulnerabilities[]? | .cve as $c |
         ($c.configurations // [])[] | .nodes[]? | .cpeMatch[]? | select(.vulnerable == true) |
@@ -143,7 +164,9 @@ discover_version_cves() {
          (.versionEndExcluding // ""),
          (.criteria | split(":")[5] // ""),
          (.criteria | split(":")[3] // ""),
-         (.criteria | split(":")[4] // "")
+         (.criteria | split(":")[4] // ""),
+         (([$c.descriptions[]? | select(.lang == "en") | .value] | first // "") | gsub("\n"; " ") | gsub("\r"; " ")),
+         ($c.metrics.cvssMetricV31[0].cvssData.vectorString // $c.metrics.cvssMetricV30[0].cvssData.vectorString // $c.metrics.cvssMetricV2[0].cvssData.vectorString // "")
         ] | join("")' <<< "$resp")
     [[ -n "$stale_out_file" && -n "$newest_stale" ]] && printf '%s\n' "$newest_stale" > "$stale_out_file"
     return 0

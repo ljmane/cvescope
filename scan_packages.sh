@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "$SCRIPT_DIR/poc_lib.sh"
 
 usage() {
-    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--no-cache] [--cache-ttl HOURS] [--stale-out FILE]"
+    echo "Usage: $0 [-f|--file FILE] [-o|--output CSV_FILE] [-d|--delay SECONDS] [-x|--exclude REGEX] [-X|--exclude-file FILE] [-s|--since WHEN] [-p|--poc-only] [--min-epss N] [--privesc] [--no-cache] [--cache-ttl HOURS] [--stale-out FILE]"
     echo ""
     echo "Reads 'PACKAGE VERSION' pairs, one per line, from FILE or stdin, e.g.:"
     echo "  dpkg-query -W -f='\${Package} \${Version}\n' | sed -E 's/^([^ ]+) [0-9]+://;s/-[^ -]*\$//' | $0"
@@ -31,10 +31,18 @@ usage() {
     echo "                        (FIRST.org's predicted REMOTE exploitation probability,"
     echo "                        0-1) >= N. Lower-scored CVEs are still reported, just not"
     echo "                        GitHub-checked (shown as PoC: SKIPPED). CVEs with no EPSS"
-    echo "                        data yet are always checked. Off by default. CAUTION: EPSS"
-    echo "                        is trained on internet-facing exploitation telemetry, so"
-    echo "                        local privesc CVEs score low even with a real, working PoC"
-    echo "                        — avoid this flag if that's what you're hunting for."
+    echo "                        data yet, or classified as local privilege escalation (see"
+    echo "                        --privesc), are always checked regardless of score. Off by"
+    echo "                        default. CAUTION: EPSS is trained on internet-facing"
+    echo "                        exploitation telemetry and still under-scores some local"
+    echo "                        privesc bugs our classifier doesn't catch — -s/-x/-X are"
+    echo "                        safer volume-reduction levers if that's your focus."
+    echo "  --privesc             Only run the GitHub PoC check for CVEs classified as local"
+    echo "                        privilege escalation (CVSS attack vector local/physical +"
+    echo "                        escalation language in the description). Others are still"
+    echo "                        reported, just not GitHub-checked (PoC: SKIPPED). This is a"
+    echo "                        heuristic, not authoritative — favors recall (may classify"
+    echo "                        some non-privesc local bugs as privesc too) over precision."
     echo "  --no-cache            Don't read or write the local results cache"
     echo "  --cache-ttl HOURS     How long a cached package result stays fresh (default 24)"
     echo "  --stale-out FILE      Write 'PACKAGE VERSION' lines for packages that have a real"
@@ -58,6 +66,7 @@ EXCLUDES=()
 EXCLUDE_FILE=""
 SINCE_VALUE="30d"
 MIN_EPSS=""
+PRIVESC_ONLY=0
 NO_CACHE=0
 CACHE_TTL_HOURS=24
 STALE_OUT=""
@@ -101,6 +110,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -lt 2 ]] && usage
             MIN_EPSS="$2"
             shift 2
+            ;;
+        --privesc)
+            PRIVESC_ONLY=1
+            shift
             ;;
         --no-cache)
             NO_CACHE=1
@@ -170,9 +183,10 @@ if [[ -n "$MIN_EPSS" ]]; then
     echo "Warning: --min-epss filters by predicted REMOTE exploitation likelihood." >&2
     echo "  Local privilege-escalation CVEs score low on EPSS almost by design (it's" >&2
     echo "  trained on internet-facing exploitation telemetry), even ones with a real," >&2
-    echo "  working PoC. If you're hunting for privesc vectors specifically, --min-epss" >&2
-    echo "  will likely hide the exact CVEs you're looking for. Prefer -s/--since and" >&2
-    echo "  -x/-X to cut scan volume instead." >&2
+    echo "  working PoC. CVEs this scan classifies as privesc (see --privesc) are always" >&2
+    echo "  checked regardless of EPSS score, but the classifier is a heuristic and won't" >&2
+    echo "  catch every real privesc CVE. If that's specifically what you're hunting for," >&2
+    echo "  --privesc, -s/--since, and -x/-X are safer ways to cut volume." >&2
 fi
 
 SINCE_CUTOFF=$(since_to_cutoff "$SINCE_VALUE") || usage
@@ -213,7 +227,7 @@ if [[ -n "$EXCLUDE_RE" ]]; then
 fi
 
 if [[ -n "$OUTPUT" ]]; then
-    printf '"package","version","cve","poc_found","poc_repo","poc_stars","poc_url","epss"\n' > "$OUTPUT"
+    printf '"package","version","cve","poc_found","poc_repo","poc_stars","poc_url","epss","privesc","skip_reason"\n' > "$OUTPUT"
 fi
 
 SINCE_LABEL="all time"
@@ -222,6 +236,7 @@ SCAN_MSG="Scanning $TOTAL line(s)"
 [[ "$PRE_EXCLUDED" -gt 0 ]] && SCAN_MSG="$SCAN_MSG ($PRE_EXCLUDED excluded by -x, $((TOTAL - PRE_EXCLUDED)) to check)"
 EPSS_LABEL=""
 [[ -n "$MIN_EPSS" ]] && EPSS_LABEL=", min EPSS: $MIN_EPSS"
+[[ "$PRIVESC_ONLY" -eq 1 ]] && EPSS_LABEL="$EPSS_LABEL, privesc-only"
 CACHE_LABEL=", cache: on (${CACHE_TTL_HOURS}h)"
 [[ "$NO_CACHE" -eq 1 ]] && CACHE_LABEL=", cache: off"
 echo "$SCAN_MSG (NVD delay: ${NVD_DELAY}s, GitHub delay: ${GH_DELAY}s, since: $SINCE_LABEL$EPSS_LABEL$CACHE_LABEL)..." >&2
@@ -234,7 +249,7 @@ AFFECTED_COUNT=0
 CVE_COUNT=0
 POC_COUNT=0
 GH_ERROR_COUNT=0
-EPSS_SKIP_COUNT=0
+SKIP_COUNT=0
 CACHE_HIT_COUNT=0
 STALE_PKG_COUNT=0
 STALE_PKGS=()
@@ -242,15 +257,15 @@ STALE_FILE=$(mktemp)
 trap 'rm -f "$STALE_FILE"' EXIT
 
 # Print one CVE's report line + CSV row, and update the running counters.
-# Args: pkg ver cve poc_found repo stars url epss
+# Args: pkg ver cve poc_found repo stars url epss privesc skip_reason
 report_cve() {
-    local pkg="$1" ver="$2" cve="$3" poc_found="$4" repo="$5" stars="$6" url="$7" epss="$8"
+    local pkg="$1" ver="$2" cve="$3" poc_found="$4" repo="$5" stars="$6" url="$7" epss="$8" privesc="$9" reason="${10}"
 
     CVE_COUNT=$((CVE_COUNT + 1))
     case "$poc_found" in
         yes) POC_COUNT=$((POC_COUNT + 1)) ;;
         error) GH_ERROR_COUNT=$((GH_ERROR_COUNT + 1)) ;;
-        skipped) EPSS_SKIP_COUNT=$((EPSS_SKIP_COUNT + 1)) ;;
+        skipped) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
     esac
 
     if [[ "$POC_ONLY" -eq 1 && "$poc_found" == "no" ]]; then
@@ -259,13 +274,13 @@ report_cve() {
         case "$poc_found" in
             yes) echo "  $cve  PoC: YES  (top: $repo ★$stars)  $url" ;;
             error) echo "  $cve  PoC: ERROR (GitHub lookup failed — rate-limited? try again or set GITHUB_TOKEN)" ;;
-            skipped) echo "  $cve  PoC: SKIPPED (EPSS ${epss:-unknown} < $MIN_EPSS threshold)" ;;
+            skipped) echo "  $cve  PoC: SKIPPED ($reason)" ;;
             *) echo "  $cve  PoC: no" ;;
         esac
 
         if [[ -n "$OUTPUT" ]]; then
-            printf '"%s","%s","%s","%s","%s","%s","%s","%s"\n' \
-                "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" >> "$OUTPUT"
+            printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+                "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" "$privesc" "$reason" >> "$OUTPUT"
         fi
     fi
 }
@@ -284,7 +299,7 @@ for line in "${LINES[@]}"; do
     fi
     PKG_COUNT=$((PKG_COUNT + 1))
 
-    CACHE_KEY=$(cache_key "$pkg" "$ver" "$SINCE_VALUE" "${MIN_EPSS:-off}")
+    CACHE_KEY=$(cache_key "$pkg" "$ver" "$SINCE_VALUE" "${MIN_EPSS:-off}" "$PRIVESC_ONLY")
 
     CACHED=""
     if [[ "$NO_CACHE" -eq 0 ]]; then
@@ -293,14 +308,14 @@ for line in "${LINES[@]}"; do
 
     if [[ -n "$CACHED" ]]; then
         CACHE_HIT_COUNT=$((CACHE_HIT_COUNT + 1))
-        mapfile -t ROWS < <(jq -r '.cves[] | [.cve, .poc_found, (.poc_repo//""), (.poc_stars//""), (.poc_url//""), (.epss//"")] | join(",")' <<< "$CACHED")
+        mapfile -t ROWS < <(jq -r '.cves[] | [.cve, .poc_found, (.poc_repo//""), (.poc_stars//""), (.poc_url//""), (.epss//""), (.privesc//""), (.reason//"")] | join(",")' <<< "$CACHED")
         if [[ ${#ROWS[@]} -gt 0 ]]; then
             AFFECTED_COUNT=$((AFFECTED_COUNT + 1))
             echo "" >&2
             echo "[$i/$TOTAL] $pkg $ver (cached)"
             for row in "${ROWS[@]}"; do
-                IFS=',' read -r cve poc_found repo stars url epss <<< "$row"
-                report_cve "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss"
+                IFS=',' read -r cve poc_found repo stars url epss privesc reason <<< "$row"
+                report_cve "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" "$privesc" "$reason"
             done
         fi
         continue
@@ -332,9 +347,14 @@ for line in "${LINES[@]}"; do
     echo "" >&2
     echo "[$i/$TOTAL] $pkg $ver"
 
+    CVE_IDS_ONLY=()
+    for row in "${CVES[@]}"; do
+        CVE_IDS_ONLY+=("${row%%$'\x1f'*}")
+    done
+
     declare -A EPSS_SCORES=()
     if [[ -n "$MIN_EPSS" ]]; then
-        CVE_CSV=$(IFS=,; echo "${CVES[*]}")
+        CVE_CSV=$(IFS=,; echo "${CVE_IDS_ONLY[*]}")
         while read -r ecve escore; do
             [[ -n "$ecve" ]] && EPSS_SCORES["$ecve"]="$escore"
         done < <(epss_lookup "$CVE_CSV")
@@ -342,10 +362,22 @@ for line in "${LINES[@]}"; do
     fi
 
     CVE_JSON_OBJS=()
-    for cve in "${CVES[@]}"; do
+    for row in "${CVES[@]}"; do
+        IFS=$'\x1f' read -r cve privesc <<< "$row"
         EPSS_SCORE="${EPSS_SCORES[$cve]:-}"
 
-        if [[ -n "$MIN_EPSS" && -n "$EPSS_SCORE" ]] && awk -v a="$EPSS_SCORE" -v b="$MIN_EPSS" 'BEGIN{exit !(a<b)}'; then
+        SKIP=0
+        REASON=""
+        if [[ "$PRIVESC_ONLY" -eq 1 && "$privesc" != "yes" ]]; then
+            SKIP=1
+            REASON="not classified as local privilege escalation"
+        elif [[ "$privesc" != "yes" && -n "$MIN_EPSS" && -n "$EPSS_SCORE" ]] \
+            && awk -v a="$EPSS_SCORE" -v b="$MIN_EPSS" 'BEGIN{exit !(a<b)}'; then
+            SKIP=1
+            REASON="EPSS $EPSS_SCORE < $MIN_EPSS threshold"
+        fi
+
+        if [[ "$SKIP" -eq 1 ]]; then
             POC_FOUND="skipped"
             REPO=""
             STARS=""
@@ -372,11 +404,12 @@ for line in "${LINES[@]}"; do
             fi
         fi
 
-        report_cve "$pkg" "$ver" "$cve" "$POC_FOUND" "$REPO" "$STARS" "$URL" "$EPSS_SCORE"
+        report_cve "$pkg" "$ver" "$cve" "$POC_FOUND" "$REPO" "$STARS" "$URL" "$EPSS_SCORE" "$privesc" "$REASON"
 
         CVE_JSON_OBJS+=("$(jq -n --arg cve "$cve" --arg pf "$POC_FOUND" --arg repo "$REPO" \
             --arg stars "$STARS" --arg url "$URL" --arg epss "$EPSS_SCORE" \
-            '{cve:$cve, poc_found:$pf, poc_repo:$repo, poc_stars:$stars, poc_url:$url, epss:$epss}')")
+            --arg privesc "$privesc" --arg reason "$REASON" \
+            '{cve:$cve, poc_found:$pf, poc_repo:$repo, poc_stars:$stars, poc_url:$url, epss:$epss, privesc:$privesc, reason:$reason}')")
     done
     unset EPSS_SCORES
 
@@ -399,7 +432,12 @@ else
 fi
 
 SUMMARY="Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded, $CACHE_HIT_COUNT from cache), $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
-[[ "$EPSS_SKIP_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $EPSS_SKIP_COUNT skipped by --min-epss."
+if [[ "$SKIP_COUNT" -gt 0 ]]; then
+    SKIP_FLAGS=""
+    [[ "$PRIVESC_ONLY" -eq 1 ]] && SKIP_FLAGS="--privesc"
+    [[ -n "$MIN_EPSS" ]] && SKIP_FLAGS="${SKIP_FLAGS:+$SKIP_FLAGS/}--min-epss"
+    SUMMARY="$SUMMARY $SKIP_COUNT PoC check(s) skipped ($SKIP_FLAGS)."
+fi
 [[ "$GH_ERROR_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $GH_ERROR_COUNT GitHub lookup(s) failed — re-run or set GITHUB_TOKEN."
 [[ "$STALE_PKG_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $STALE_PKG_COUNT package(s) have a known CVE outside your -s $SINCE_VALUE window — widen it (e.g. -s all) to see them."
 echo "$SUMMARY Took $ELAPSED_STR."

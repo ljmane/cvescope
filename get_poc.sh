@@ -71,7 +71,7 @@ if [[ -n "$VERSION" ]]; then
         exit 1
     }
 
-    mapfile -t CVE_IDS < <(printf '%s\n' "$DISCOVERY" | awk 'NF && !seen[$0]++' | head -n 5)
+    mapfile -t CVE_IDS < <(printf '%s\n' "$DISCOVERY" | cut -d$'\x1f' -f1 | awk 'NF && !seen[$0]++' | head -n 5)
 
     if [[ ${#CVE_IDS[@]} -eq 0 ]]; then
         echo "No CVEs found for '$QUERY' affecting version $VERSION${SINCE_CUTOFF:+ published in the last $SINCE_VALUE}"
