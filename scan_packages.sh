@@ -224,6 +224,9 @@ POC_COUNT=0
 GH_ERROR_COUNT=0
 EPSS_SKIP_COUNT=0
 CACHE_HIT_COUNT=0
+STALE_PKG_COUNT=0
+STALE_FILE=$(mktemp)
+trap 'rm -f "$STALE_FILE"' EXIT
 
 # Print one CVE's report line + CSV row, and update the running counters.
 # Args: pkg ver cve poc_found repo stars url epss
@@ -290,7 +293,8 @@ for line in "${LINES[@]}"; do
         continue
     fi
 
-    DISCOVERY=$(discover_version_cves "$pkg" "$ver" "$SINCE_CUTOFF")
+    : > "$STALE_FILE"
+    DISCOVERY=$(discover_version_cves "$pkg" "$ver" "$SINCE_CUTOFF" "$STALE_FILE")
     NVD_STATUS=$?
     sleep "$NVD_DELAY"
 
@@ -303,6 +307,7 @@ for line in "${LINES[@]}"; do
     mapfile -t CVES < <(printf '%s\n' "$DISCOVERY" | awk 'NF && !seen[$0]++')
 
     if [[ ${#CVES[@]} -eq 0 ]]; then
+        [[ -s "$STALE_FILE" ]] && STALE_PKG_COUNT=$((STALE_PKG_COUNT + 1))
         [[ "$NO_CACHE" -eq 0 ]] && cache_set "$CACHE_DIR" "$CACHE_KEY" "[]"
         continue
     fi
@@ -380,6 +385,7 @@ fi
 SUMMARY="Summary: $PKG_COUNT package(s) scanned ($EXCLUDED_COUNT excluded, $CACHE_HIT_COUNT from cache), $AFFECTED_COUNT affected, $CVE_COUNT CVE(s) found, $POC_COUNT with a public PoC."
 [[ "$EPSS_SKIP_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $EPSS_SKIP_COUNT skipped by --min-epss."
 [[ "$GH_ERROR_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $GH_ERROR_COUNT GitHub lookup(s) failed — re-run or set GITHUB_TOKEN."
+[[ "$STALE_PKG_COUNT" -gt 0 ]] && SUMMARY="$SUMMARY $STALE_PKG_COUNT package(s) have a known CVE outside your -s $SINCE_VALUE window — widen it (e.g. -s all) to see them."
 echo "$SUMMARY Took $ELAPSED_STR."
 [[ -n "$OUTPUT" ]] && echo "CSV report written to $OUTPUT"
 

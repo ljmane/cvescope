@@ -64,7 +64,9 @@ if [[ -n "$VERSION" ]]; then
     else
         echo "Looking up CVEs for '$QUERY' affecting version $VERSION via NVD..."
     fi
-    DISCOVERY=$(discover_version_cves "$QUERY" "$VERSION" "$SINCE_CUTOFF") || {
+    STALE_FILE=$(mktemp)
+    DISCOVERY=$(discover_version_cves "$QUERY" "$VERSION" "$SINCE_CUTOFF" "$STALE_FILE") || {
+        rm -f "$STALE_FILE"
         echo "Error: NVD API request failed. Check your connection or NVD_API_KEY."
         exit 1
     }
@@ -73,8 +75,14 @@ if [[ -n "$VERSION" ]]; then
 
     if [[ ${#CVE_IDS[@]} -eq 0 ]]; then
         echo "No CVEs found for '$QUERY' affecting version $VERSION${SINCE_CUTOFF:+ published in the last $SINCE_VALUE}"
+        if [[ -s "$STALE_FILE" ]]; then
+            STALE_DATE=$(cat "$STALE_FILE")
+            echo "  ...but at least one known CVE matches the version, published ${STALE_DATE:0:10} — outside your -s $SINCE_VALUE window. Try -s all or a wider window."
+        fi
+        rm -f "$STALE_FILE"
         exit 0
     fi
+    rm -f "$STALE_FILE"
 
     echo "Matching CVE(s): ${CVE_IDS[*]}"
 

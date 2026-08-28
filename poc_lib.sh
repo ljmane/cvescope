@@ -95,8 +95,14 @@ cpe_match_version() {
 # $since (an ISO cutoff date, YYYY-MM-DD) is given, CVEs published before it
 # are skipped. Prints every remaining match found (caller decides whether to
 # cap the count).
+#
+# If $stale_out_file is given and at least one CVE matches the product and
+# version but is excluded purely by $since, the most recent such CVE's
+# published date is written there — a zero-extra-API-call signal that the
+# window (not the version match) is why nothing showed up, since this is
+# computed from the same response already being parsed.
 discover_version_cves() {
-    local product="$1" version="$2" since="${3:-}" resp exact_cve=""
+    local product="$1" version="$2" since="${3:-}" stale_out_file="${4:-}" resp exact_cve=""
     if is_cve_id "$product"; then
         resp=$(nvd_lookup_by_cve "$product") || return 1
         # Already resolved to one specific CVE — no product name to filter on.
@@ -108,10 +114,10 @@ discover_version_cves() {
     local token="${product%% *}"
     token="${token,,}"
     token="${token//-/_}"
+    local newest_stale=""
 
     while IFS=$'\x1f' read -r cve pub start_inc start_exc end_inc end_exc exact vendor prod; do
         [[ -z "$cve" ]] && continue
-        [[ -n "$since" && -n "$pub" && "$pub" < "$since" ]] && continue
         if [[ -z "$exact_cve" ]]; then
             # Exact match on the CPE product field only — substring/vendor
             # matching lets unrelated products through (e.g. "wget" matching
@@ -120,8 +126,12 @@ discover_version_cves() {
             prod_norm="${prod_norm//-/_}"
             [[ "$prod_norm" == "$token" ]] || continue
         fi
-        cpe_match_version "$version" "$start_inc" "$start_exc" "$end_inc" "$end_exc" "$exact" \
-            && printf '%s\n' "$cve"
+        cpe_match_version "$version" "$start_inc" "$start_exc" "$end_inc" "$end_exc" "$exact" || continue
+        if [[ -n "$since" && -n "$pub" && "$pub" < "$since" ]]; then
+            [[ -z "$newest_stale" || "$pub" > "$newest_stale" ]] && newest_stale="$pub"
+            continue
+        fi
+        printf '%s\n' "$cve"
     done < <(jq -r '
         .vulnerabilities[]? | .cve as $c |
         ($c.configurations // [])[] | .nodes[]? | .cpeMatch[]? | select(.vulnerable == true) |
@@ -135,6 +145,7 @@ discover_version_cves() {
          (.criteria | split(":")[3] // ""),
          (.criteria | split(":")[4] // "")
         ] | join("")' <<< "$resp")
+    [[ -n "$stale_out_file" && -n "$newest_stale" ]] && printf '%s\n' "$newest_stale" > "$stale_out_file"
     return 0
 }
 
