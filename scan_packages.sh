@@ -255,9 +255,19 @@ STALE_PKG_COUNT=0
 STALE_PKGS=()
 STALE_FILE=$(mktemp)
 trap 'rm -f "$STALE_FILE"' EXIT
+HEADER_PENDING=""
 
 # Print one CVE's report line + CSV row, and update the running counters.
 # Args: pkg ver cve poc_found repo stars url epss privesc skip_reason
+#
+# Skipped CVEs (--min-epss/--privesc) never print to the console — with a
+# big package list, a skip line per uncheck CVE is exactly the kind of
+# clutter these flags exist to reduce, and the summary line already reports
+# the skip count. They're still written to CSV (-o), which is meant as a
+# complete audit trail rather than a mirror of the live report. The package
+# header (set via $HEADER_PENDING before calling this) only prints lazily,
+# right before the first CVE line that's actually shown — so a package
+# where every CVE gets skipped never leaves an orphaned header behind.
 report_cve() {
     local pkg="$1" ver="$2" cve="$3" poc_found="$4" repo="$5" stars="$6" url="$7" epss="$8" privesc="$9" reason="${10}"
 
@@ -268,20 +278,26 @@ report_cve() {
         skipped) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
     esac
 
-    if [[ "$POC_ONLY" -eq 1 && "$poc_found" == "no" ]]; then
-        : # still counted above, just not printed/written
-    else
+    local console_hide=0
+    [[ "$POC_ONLY" -eq 1 && "$poc_found" == "no" ]] && console_hide=1
+    [[ "$poc_found" == "skipped" ]] && console_hide=1
+
+    if [[ "$console_hide" -eq 0 ]]; then
+        if [[ -n "$HEADER_PENDING" ]]; then
+            echo "" >&2
+            echo "$HEADER_PENDING"
+            HEADER_PENDING=""
+        fi
         case "$poc_found" in
             yes) echo "  $cve  PoC: YES  (top: $repo ★$stars)  $url" ;;
             error) echo "  $cve  PoC: ERROR (GitHub lookup failed — rate-limited? try again or set GITHUB_TOKEN)" ;;
-            skipped) echo "  $cve  PoC: SKIPPED ($reason)" ;;
             *) echo "  $cve  PoC: no" ;;
         esac
+    fi
 
-        if [[ -n "$OUTPUT" ]]; then
-            printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
-                "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" "$privesc" "$reason" >> "$OUTPUT"
-        fi
+    if [[ -n "$OUTPUT" ]] && ! { [[ "$POC_ONLY" -eq 1 && "$poc_found" == "no" ]]; }; then
+        printf '"%s","%s","%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+            "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" "$privesc" "$reason" >> "$OUTPUT"
     fi
 }
 
@@ -311,8 +327,7 @@ for line in "${LINES[@]}"; do
         mapfile -t ROWS < <(jq -r '.cves[] | [.cve, .poc_found, (.poc_repo//""), (.poc_stars//""), (.poc_url//""), (.epss//""), (.privesc//""), (.reason//"")] | join(",")' <<< "$CACHED")
         if [[ ${#ROWS[@]} -gt 0 ]]; then
             AFFECTED_COUNT=$((AFFECTED_COUNT + 1))
-            echo "" >&2
-            echo "[$i/$TOTAL] $pkg $ver (cached)"
+            HEADER_PENDING="[$i/$TOTAL] $pkg $ver (cached)"
             for row in "${ROWS[@]}"; do
                 IFS=',' read -r cve poc_found repo stars url epss privesc reason <<< "$row"
                 report_cve "$pkg" "$ver" "$cve" "$poc_found" "$repo" "$stars" "$url" "$epss" "$privesc" "$reason"
@@ -344,8 +359,7 @@ for line in "${LINES[@]}"; do
     fi
 
     AFFECTED_COUNT=$((AFFECTED_COUNT + 1))
-    echo "" >&2
-    echo "[$i/$TOTAL] $pkg $ver"
+    HEADER_PENDING="[$i/$TOTAL] $pkg $ver"
 
     CVE_IDS_ONLY=()
     for row in "${CVES[@]}"; do
