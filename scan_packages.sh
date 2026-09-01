@@ -284,7 +284,7 @@ report_cve() {
 
     if [[ "$console_hide" -eq 0 ]]; then
         if [[ -n "$HEADER_PENDING" ]]; then
-            echo "" >&2
+            printf '\r\033[K' >&2
             echo "$HEADER_PENDING"
             HEADER_PENDING=""
         fi
@@ -342,8 +342,7 @@ for line in "${LINES[@]}"; do
     sleep "$NVD_DELAY"
 
     if [[ $NVD_STATUS -ne 0 ]]; then
-        echo "" >&2
-        echo "  [$pkg $ver] NVD lookup failed (rate-limited or network error) — skipping" >&2
+        printf '\r\033[K  [%s %s] NVD lookup failed (rate-limited or network error) — skipping\n' "$pkg" "$ver" >&2
         continue
     fi
 
